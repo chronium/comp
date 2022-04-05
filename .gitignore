@@ -1,0 +1,6 @@
+*.o
+*.ll
+*.bc
+**/*.log
+
+.vscode/settings.json
