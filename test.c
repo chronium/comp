@@ -20,7 +20,8 @@ char* str_test() {
 int printf(const char *fmt, ...);
 
 int main(int argc, char **argv) {
-    test(true);
-    printf("Hello World! %s %d %d\n", *argv, true, -1);
+    if (true) {
+        printf("Hello World! 1 + 1 = %d\n", 1 + 1);
+    }
     return 0;
 }

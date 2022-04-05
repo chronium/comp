@@ -3,4 +3,6 @@
 *.bc
 **/*.log
 
+comp
+
 .vscode/settings.json

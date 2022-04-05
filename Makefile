@@ -9,6 +9,7 @@ all: comp
 
 run: all
 	valgrind ./comp test.c
+	lli-12 out.bc
 	# llvm-dis-12 comp.bc
 
 tests: comp
