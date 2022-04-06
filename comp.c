@@ -57,6 +57,9 @@ LLVMValueRef LLVMBuildAlloca(LLVMBuilderRef builder, LLVMTypeRef Ty,
                              const char* Name);
 LLVMValueRef LLVMBuildStore(LLVMBuilderRef builder, LLVMValueRef Val,
                             LLVMValueRef Ptr);
+LLVMValueRef LLVMBuildGEP2(LLVMBuilderRef B, LLVMTypeRef Ty,
+                           LLVMValueRef Pointer, LLVMValueRef* Indices,
+                           unsigned NumIndices, const char* Name);
 
 // Diagnostics
 char* LLVMPrintModuleToString(LLVMModuleRef module);
@@ -425,6 +428,9 @@ LLVMValueRef deref_value(LLVMValueRef value) {
 }
 
 LLVMValueRef atom() {
+    LLVMValueRef ret = LLVMGetPoison(LLVMVoidType());
+    char* what = strdup(_buffer);
+
     if (_token == TOKEN_IDENT) {
         char* sym = strdup(_buffer);
         read();
@@ -433,48 +439,63 @@ LLVMValueRef atom() {
         int lookup = sym_lookup(locals, local_no, sym);
 
         if (lookup > -1 && lookup < arg_no) {
-            return LLVMGetParam(_function, lookup);
-        }
-
-        if (lookup != -1) {
+            ret = LLVMGetParam(_function, lookup);
+        } else if (lookup != -1) {
             LLVMValueRef ref = local_refs[lookup];
 
-            return LLVMBuildLoad2(_builder, LLVMGetElementType(LLVMTypeOf(ref)),
-                                  ref, "");
+            ret = LLVMBuildLoad2(_builder, LLVMGetElementType(LLVMTypeOf(ref)),
+                                 ref, "");
         } else if (global != -1) {
             LLVMValueRef ref = global_refs[global];
 
-            return LLVMBuildLoad2(_builder, LLVMGetElementType(LLVMTypeOf(ref)),
-                                  ref, "");
+            ret = LLVMBuildLoad2(_builder, LLVMGetElementType(LLVMTypeOf(ref)),
+                                 ref, "");
         } else
             error("Symbol %s not declared");
     } else if (_token == TOKEN_INT) {
         char* val = strdup(_buffer);
         read();
 
-        return LLVMConstIntOfString(LLVMInt32Type(), val, 10);
+        ret = LLVMConstIntOfString(LLVMInt32Type(), val, 10);
     } else if (_token == TOKEN_CHAR) {
         int val = _buffer[0];
         read();
 
-        return LLVMConstInt(LLVMInt8Type(), val, false);
+        ret = LLVMConstInt(LLVMInt8Type(), val, false);
     } else if (_token == TOKEN_STRING) {
         char* val = strdup(_buffer);
         read();
         val[strlen(val)] = '\0';
 
-        return LLVMBuildGlobalStringPtr(_builder, val, "");
+        ret = LLVMBuildGlobalStringPtr(_builder, val, "");
     } else if (try_match("*")) {
         LLVMValueRef val = expr(0);
 
         if (is_indexable(val))
-            return deref_value(val);
+            ret = deref_value(val);
         else
             error("Expected derefable value");
     } else {
         error("expected an atom, found '%s'");
+
+        return ret;
     }
-    return LLVMGetPoison(LLVMVoidType());
+
+    if (try_match("[")) {
+        if (is_indexable(ret)) {
+            LLVMValueRef indices[] = {expr(0)};
+            LLVMDumpType(LLVMGetElementType(LLVMTypeOf(ret)));
+            LLVMTypeRef inner = LLVMGetElementType(LLVMTypeOf(ret));
+
+            ret = LLVMBuildLoad2(
+                _builder, inner,
+                LLVMBuildGEP2(_builder, inner, ret, indices, 1, ""), "");
+        } else
+            errorb("%s is not indexable", what);
+        match("]");
+    }
+
+    return ret;
 }
 
 LLVMValueRef rhs(LLVMValueRef left) {
@@ -613,10 +634,13 @@ void line() {
             else {
                 read();
                 if (try_match("=")) {
+                    LLVMValueRef ref;
                     if (local != -1)
-                        LLVMBuildStore(_builder, expr(0), local_refs[local]);
-                    else if (global != -1)
-                        LLVMBuildStore(_builder, expr(0), global_refs[global]);
+                        ref = local_refs[local];
+                    else
+                        ref = global_refs[global];
+
+                    LLVMBuildStore(_builder, expr(0), ref);
                 } else if (try_match("(")) {
                     if (global == -1)
                         errorb("could not find function %s\n", ident);
@@ -735,8 +759,8 @@ void gen() {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 2) {
-        printf("Usage: %s <file>", argv[0]);
+    if (argc != 3) {
+        printf("Usage: %s <file> <out>", argv[0]);
         return 1;
     }
 
@@ -763,7 +787,7 @@ int main(int argc, char** argv) {
             errors += 1;
         }
 
-        if (LLVMWriteBitcodeToFile(_module, "out.bc") != 0) {
+        if (LLVMWriteBitcodeToFile(_module, argv[2]) != 0) {
             fprintf(stderr, "error writing bitcode to file, skipping\n");
         }
         LLVMDisposeMessage(dump);

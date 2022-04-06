@@ -7,10 +7,10 @@ CXXFLAGS=$(shell llvm-config-12 --cxxflags --ldflags --libs core executionengine
 
 all: comp
 
-run: all
-	valgrind ./comp test.c
-	lli-12 out.bc
-	# llvm-dis-12 comp.bc
+run: ARGS=$(filter-out $@,$(MAKECMDGOALS))
+run: all 
+	valgrind ./comp $(ARGS)
+	lli-12 $(lastword $(ARGS))
 
 tests: comp
 	$(MAKE) --directory=$@

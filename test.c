@@ -36,6 +36,11 @@ int main(int argc, char** argv) {
     if (true) {
         printf("Hello World! ORDER OF OPERATIONS 1 + 2 * 3 = %d\ntest = %d\n",
                1 + 2 * 3, test);
+
+        char* foobar = "Foobar";
+        printf("Foobar[5] = %c\n", foobar[5]);
+
+        printf("argv[0] = %s\n", argv[0]);
     }
     return 0;
 }
