@@ -3,12 +3,12 @@
 #include <stdlib.h>
 #include <ctype.h>
 
-typedef void* LLVMModuleRef;
-typedef void* LLVMTypeRef;
-typedef void* LLVMValueRef;
-typedef void* LLVMBuilderRef;
-typedef void* LLVMBasicBlockRef;
-typedef void* LLVMContextRef;
+typedef struct LLVMModule* LLVMModuleRef;
+typedef struct LLVMType* LLVMTypeRef;
+typedef struct LLVMValue* LLVMValueRef;
+typedef struct LLVMBuilder* LLVMBuilderRef;
+typedef struct LLVMBasicBlock* LLVMBasicBlockRef;
+typedef struct LLVMContext* LLVMContextRef;
 
 typedef int bool;
 
@@ -565,6 +565,10 @@ LLVMTypeRef type() {
         is_void = true;
     } else if (try_match("char"))
         ret = LLVMInt8Type();
+    else if (try_match("struct")) {
+        ret = LLVMStructCreateNamed(LLVMGetGlobalContext(), strdup(_buffer));
+        read();
+    }
 
     if (ret == 0) {
         int lookup = sym_lookup(typedefs, typedef_no, _buffer);
@@ -581,7 +585,6 @@ LLVMTypeRef type() {
     }
 
     if (peek_tok("*") && is_void) {
-        read();
         ret = LLVMInt8Type();
     }
 
@@ -704,23 +707,25 @@ int main(int argc, char** argv) {
 
     gen();
 
-    char* dump = LLVMPrintModuleToString(_module);
-    printf("%s\n", dump);
+    if (errors != 0) {
+        char* dump = LLVMPrintModuleToString(_module);
+        printf("%s\n", dump);
 
-    char *error = NULL;
-    LLVMVerifyModule(_module, LLVMPrintMessageAction, &error);
+        char *error = NULL;
+        LLVMVerifyModule(_module, LLVMPrintMessageAction, &error);
 
-    if (strlen(error)) {
-        //fprintf(stderr, "error: %s\n", error);
-        errors += 1;
+        if (strlen(error)) {
+            //fprintf(stderr, "error: %s\n", error);
+            errors += 1;
+        }
+
+        if (LLVMWriteBitcodeToFile(_module, "out.bc") != 0) {
+            fprintf(stderr, "error writing bitcode to file, skipping\n");
+        }
+        LLVMDisposeMessage(dump);
+        LLVMDisposeMessage(error);
     }
 
-    if (LLVMWriteBitcodeToFile(_module, "out.bc") != 0) {
-        fprintf(stderr, "error writing bitcode to file, skipping\n");
-    }
-
-    LLVMDisposeMessage(error);
-    LLVMDisposeMessage(dump);
     LLVMDisposeBuilder(_builder);
     LLVMDisposeModule(_module);
     lex_drop();

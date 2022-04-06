@@ -2,6 +2,21 @@ void foo();
 
 typedef int bool;
 
+typedef struct LLVMModule* LLVMModuleRef;
+typedef struct LLVMType* LLVMTypeRef;
+typedef struct LLVMValue* LLVMValueRef;
+typedef struct LLVMBuilder* LLVMBuilderRef;
+typedef struct LLVMBasicBlock* LLVMBasicBlockRef;
+typedef struct LLVMContext* LLVMContextRef;
+
+LLVMModuleRef LLVMModuleCreateWithName(const char *name);
+LLVMValueRef LLVMAddFunction(LLVMModuleRef module, const char *name, LLVMTypeRef type);
+LLVMValueRef LLVMGetNamedFunction(LLVMModuleRef module, const char* name);
+void LLVMDisposeModule(LLVMModuleRef module);
+int LLVMVerifyModule(LLVMModuleRef module, int action, char **output);
+LLVMContextRef LLVMGetGlobalContext();
+bool LLVMWriteBitcodeToFile(LLVMModuleRef M, const char *Path);
+
 int test(bool adsf);
 
 int test(bool adsf) {
@@ -21,7 +36,7 @@ int printf(const char *fmt, ...);
 
 int main(int argc, char **argv) {
     if (true) {
-        printf("Hello World! 1 + 1 = %d\n", 1 + 1);
+        printf("Hello World! ORDER OF OPERATIONS 1 + 2 * 3 = %d\n", 1 + 2 * 3);
     }
     return 0;
 }
