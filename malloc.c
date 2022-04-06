@@ -4,7 +4,7 @@ int printf(const char* fmt, ...);
 typedef struct LLVMValue* LLVMValueRef;
 
 int main() {
-    LLVMValueRef ref = malloc(64);
+    LLVMValueRef* ref = malloc(64);
 
     char* ty = "test";
 

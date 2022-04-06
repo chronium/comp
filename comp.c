@@ -68,6 +68,8 @@ LLVMValueRef LLVMBuildICmp(LLVMBuilderRef, LLVMIntPredicate Op,
 LLVMValueRef LLVMBuildNeg(LLVMBuilderRef, LLVMValueRef V, const char* Name);
 LLVMValueRef LLVMBuildPointerCast(LLVMBuilderRef, LLVMValueRef Val,
                                   LLVMTypeRef DestTy, const char* Name);
+LLVMValueRef LLVMBuildArrayAlloca(LLVMBuilderRef, LLVMTypeRef Ty,
+                                  LLVMValueRef Val, const char* Name);
 
 // Diagnostics
 char* LLVMPrintModuleToString(LLVMModuleRef module);
@@ -419,7 +421,7 @@ bool binds_tighter(int right) {
 LLVMValueRef expr();
 
 LLVMValueRef funcall(char* name) {
-    LLVMValueRef* argv = malloc(64);
+    LLVMValueRef argv[8];
     int argc = 0;
 
     while (!try_match(")")) {
@@ -512,7 +514,7 @@ LLVMValueRef atom() {
 
     if (try_match("[")) {
         if (is_indexable(ret)) {
-            LLVMValueRef* indices = malloc(64 * 8);
+            LLVMValueRef indices[1];
             indices[0] = expr(0);
             LLVMDumpType(LLVMGetElementType(LLVMTypeOf(ret)));
             LLVMTypeRef inner = LLVMGetElementType(LLVMTypeOf(ret));
@@ -651,17 +653,32 @@ void line() {
             char* name = strdup(_buffer);
             read();
 
-            LLVMValueRef ptr = LLVMBuildAlloca(_builder, ty, name);
-            new_local(name, ptr);
+            if (try_match("[")) {
+                LLVMValueRef count = expr(0);
 
-            if (try_match("=")) {
-                LLVMValueRef val = expr(0);
+                match("]");
 
-                if (LLVMTypeOf(val) == LLVMPointerType(LLVMInt8Type(), 0) &&
-                    LLVMGetTypeKind(ty) == LLVMPointerTypeKind)
-                    val = LLVMBuildPointerCast(_builder, val, ty, "");
+                LLVMValueRef slot =
+                    LLVMBuildAlloca(_builder, LLVMPointerType(ty, 0), name);
+                LLVMValueRef ptr =
+                    LLVMBuildArrayAlloca(_builder, ty, count, name);
 
-                LLVMBuildStore(_builder, val, ptr);
+                LLVMBuildStore(_builder, ptr, slot);
+
+                new_local(name, slot);
+            } else {
+                LLVMValueRef ptr = LLVMBuildAlloca(_builder, ty, name);
+                new_local(name, ptr);
+
+                if (try_match("=")) {
+                    LLVMValueRef val = expr(0);
+
+                    if (LLVMTypeOf(val) == LLVMPointerType(LLVMInt8Type(), 0) &&
+                        LLVMGetTypeKind(ty) == LLVMPointerTypeKind)
+                        val = LLVMBuildPointerCast(_builder, val, ty, "");
+
+                    LLVMBuildStore(_builder, val, ptr);
+                }
             }
         } else if (_token == TOKEN_IDENT) {
             int global = sym_lookup(globals, global_no, ident);
@@ -680,7 +697,7 @@ void line() {
                 if (try_match("[")) {
                     if (!is_indexable(ref)) error("lvalue must be indexable");
 
-                    LLVMValueRef* indices = malloc(64);
+                    LLVMValueRef indices[1];
                     indices[0] = expr(0);
 
                     match("]");
@@ -737,7 +754,7 @@ void decl(int context) {
     if (try_match("(") && !is_typedef) {
         if (context == module_context) new_scope();
 
-        LLVMTypeRef* argv = malloc(64);
+        LLVMTypeRef argv[8];
         int argc = 0;
 
         bool varargs = false;
