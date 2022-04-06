@@ -14,6 +14,8 @@ typedef int bool;
 
 #define LLVMPrintMessageAction 1
 
+typedef int LLVMIntPredicate;
+
 // Module
 LLVMModuleRef LLVMModuleCreateWithName(const char* name);
 LLVMValueRef LLVMAddFunction(LLVMModuleRef module, const char* name,
@@ -60,6 +62,12 @@ LLVMValueRef LLVMBuildStore(LLVMBuilderRef builder, LLVMValueRef Val,
 LLVMValueRef LLVMBuildGEP2(LLVMBuilderRef B, LLVMTypeRef Ty,
                            LLVMValueRef Pointer, LLVMValueRef* Indices,
                            unsigned NumIndices, const char* Name);
+LLVMValueRef LLVMBuildICmp(LLVMBuilderRef, LLVMIntPredicate Op,
+                           LLVMValueRef LHS, LLVMValueRef RHS,
+                           const char* Name);
+LLVMValueRef LLVMBuildNeg(LLVMBuilderRef, LLVMValueRef V, const char* Name);
+LLVMValueRef LLVMBuildPointerCast(LLVMBuilderRef, LLVMValueRef Val,
+                                  LLVMTypeRef DestTy, const char* Name);
 
 // Diagnostics
 char* LLVMPrintModuleToString(LLVMModuleRef module);
@@ -124,6 +132,17 @@ bool has_returned = 0;
 
 int LLVMArrayTypeKind = 11;
 int LLVMPointerTypeKind = 12;
+
+LLVMIntPredicate LLVMIntEQ = 32;   // equal
+LLVMIntPredicate LLVMIntNE = 33;   // not equal
+LLVMIntPredicate LLVMIntUGT = 34;  // unsigned greater than
+LLVMIntPredicate LLVMIntUGE = 35;  // unsigned greater or equal
+LLVMIntPredicate LLVMIntULT = 36;  // unsigned less than
+LLVMIntPredicate LLVMIntULE = 37;  // unsigned less or equal
+LLVMIntPredicate LLVMIntSGT = 38;  // signed greater than
+LLVMIntPredicate LLVMIntSGE = 39;  // signed greater or equal
+LLVMIntPredicate LLVMIntSLT = 40;  // signed less than
+LLVMIntPredicate LLVMIntSLE = 41;  // signed less or equal
 
 char* strdup(const char* str) { return strcpy(malloc(strlen(str) + 1), str); }
 
@@ -448,8 +467,11 @@ LLVMValueRef atom() {
         } else if (global != -1) {
             LLVMValueRef ref = global_refs[global];
 
-            ret = LLVMBuildLoad2(_builder, LLVMGetElementType(LLVMTypeOf(ref)),
-                                 ref, "");
+            if (try_match("(")) {
+                ret = funcall(sym);
+            } else
+                ret = LLVMBuildLoad2(
+                    _builder, LLVMGetElementType(LLVMTypeOf(ref)), ref, "");
         } else
             error("Symbol %s not declared");
     } else if (_token == TOKEN_INT) {
@@ -475,6 +497,10 @@ LLVMValueRef atom() {
             ret = deref_value(val);
         else
             error("Expected derefable value");
+    } else if (try_match("!")) {
+        LLVMValueRef val = expr(0);
+
+        ret = LLVMBuildNeg(_builder, val, "");
     } else {
         error("expected an atom, found '%s'");
 
@@ -483,7 +509,8 @@ LLVMValueRef atom() {
 
     if (try_match("[")) {
         if (is_indexable(ret)) {
-            LLVMValueRef indices[] = {expr(0)};
+            LLVMValueRef* indices = malloc(64 * 8);
+            indices[0] = expr(0);
             LLVMDumpType(LLVMGetElementType(LLVMTypeOf(ret)));
             LLVMTypeRef inner = LLVMGetElementType(LLVMTypeOf(ret));
 
@@ -517,6 +544,9 @@ LLVMValueRef rhs(LLVMValueRef left) {
     } else if (!strcmp(op, "/")) {
         read();
         return LLVMBuildSDiv(_builder, left, expr(prec), "");
+    } else if (!strcmp(op, "!=")) {
+        read();
+        return LLVMBuildICmp(_builder, LLVMIntNE, left, expr(prec), "");
     }
 
     error("Unhandled op %s");
@@ -548,7 +578,7 @@ void branch() {
 
     block();
 
-    LLVMBuildBr(_builder, els);
+    if (!has_returned) LLVMBuildBr(_builder, els);
     LLVMPositionBuilderAtEnd(_builder, els);
 }
 
@@ -623,6 +653,11 @@ void line() {
 
             if (try_match("=")) {
                 LLVMValueRef val = expr(0);
+
+                if (LLVMTypeOf(val) == LLVMPointerType(LLVMInt8Type(), 0) &&
+                    LLVMGetTypeKind(ty) == LLVMPointerTypeKind)
+                    val = LLVMBuildPointerCast(_builder, val, ty, "");
+
                 LLVMBuildStore(_builder, val, ptr);
             }
         } else if (_token == TOKEN_IDENT) {
