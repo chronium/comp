@@ -193,7 +193,10 @@ void lex_eat_escape() {
     if (_curch == '\\') {
         lex_next_char();
 
-        if (_curch == 'n' && !feof(_input)) _buffer[_buflength++] = '\n';
+        if (_curch == 'n' && !feof(_input))
+            _buffer[_buflength++] = '\n';
+        else if (_curch == '0' && !feof(_input))
+            _buffer[_buflength++] = '\0';
         lex_next_char();
     } else
         lex_eat_char();
@@ -668,15 +671,30 @@ void line() {
                 error("Could not find global or local %s\n");
             else {
                 read();
-                if (try_match("=")) {
-                    LLVMValueRef ref;
-                    if (local != -1)
-                        ref = local_refs[local];
-                    else
-                        ref = global_refs[global];
+                LLVMValueRef ref;
+                if (local != -1)
+                    ref = local_refs[local];
+                else if (global != -1)
+                    ref = global_refs[global];
 
+                if (try_match("[")) {
+                    if (!is_indexable(ref)) error("lvalue must be indexable");
+
+                    LLVMValueRef* indices = malloc(64);
+                    indices[0] = expr(0);
+
+                    match("]");
+
+                    LLVMTypeRef ty = LLVMGetElementType(LLVMTypeOf(ref));
+
+                    ref = LLVMBuildGEP2(_builder, LLVMGetElementType(ty),
+                                        LLVMBuildLoad2(_builder, ty, ref, ""),
+                                        indices, 1, "");
+                }
+
+                if (try_match("="))
                     LLVMBuildStore(_builder, expr(0), ref);
-                } else if (try_match("(")) {
+                else if (try_match("(")) {
                     if (global == -1)
                         errorb("could not find function %s\n", ident);
                     else if (is_fn[global] != true)
