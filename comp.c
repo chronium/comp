@@ -37,8 +37,8 @@ LLVMValueRef LLVMBuildGlobalString(LLVMBuilderRef builder, const char* Str,
 LLVMValueRef LLVMBuildGlobalStringPtr(LLVMBuilderRef builder, const char* Str,
                                       const char* Name);
 LLVMValueRef LLVMBuildCall2(LLVMBuilderRef builder, LLVMTypeRef ret,
-                            LLVMValueRef Fn, LLVMValueRef* Args,
-                            unsigned NumArgs, const char* Name);
+                            LLVMValueRef Fn, LLVMValueRef* Args, int NumArgs,
+                            const char* Name);
 LLVMValueRef LLVMBuildLoad2(LLVMBuilderRef builder, LLVMTypeRef ret,
                             LLVMValueRef Fn, const char* Name);
 LLVMValueRef LLVMBuildCondBr(LLVMBuilderRef builder, LLVMValueRef If,
@@ -60,7 +60,7 @@ LLVMValueRef LLVMBuildStore(LLVMBuilderRef builder, LLVMValueRef Val,
                             LLVMValueRef Ptr);
 LLVMValueRef LLVMBuildGEP2(LLVMBuilderRef B, LLVMTypeRef Ty,
                            LLVMValueRef Pointer, LLVMValueRef* Indices,
-                           unsigned NumIndices, const char* Name);
+                           int NumIndices, const char* Name);
 LLVMValueRef LLVMBuildICmp(LLVMBuilderRef, LLVMIntPredicate Op,
                            LLVMValueRef LHS, LLVMValueRef RHS,
                            const char* Name);
@@ -78,6 +78,8 @@ LLVMValueRef LLVMBuildXor(LLVMBuilderRef, LLVMValueRef LHS, LLVMValueRef RHS,
 LLVMValueRef LLVMBuildNSWNeg(LLVMBuilderRef, LLVMValueRef V, const char* Name);
 LLVMValueRef LLVMBuildZExt(LLVMBuilderRef, LLVMValueRef Val, LLVMTypeRef DestTy,
                            const char* Name);
+LLVMValueRef LLVMBuildBitCast(LLVMBuilderRef, LLVMValueRef Val,
+                              LLVMTypeRef DestTy, const char* Name);
 
 // Diagnostics
 char* LLVMPrintModuleToString(LLVMModuleRef module);
@@ -89,23 +91,22 @@ LLVMTypeRef LLVMInt32Type();
 LLVMTypeRef LLVMInt8Type();
 LLVMTypeRef LLVMInt1Type();
 LLVMTypeRef LLVMVoidType();
-LLVMTypeRef LLVMPointerType(LLVMTypeRef ty, unsigned AddressSpace);
-LLVMTypeRef LLVMFunctionType(LLVMTypeRef ret, LLVMTypeRef* args,
-                             unsigned ParamCount, int IsVarArg);
+LLVMTypeRef LLVMPointerType(LLVMTypeRef ty, int AddressSpace);
+LLVMTypeRef LLVMFunctionType(LLVMTypeRef ret, LLVMTypeRef* args, int ParamCount,
+                             int IsVarArg);
 LLVMTypeRef LLVMTypeOf(LLVMValueRef val);
 LLVMTypeRef LLVMGetReturnType(LLVMTypeRef ty);
 LLVMTypeRef LLVMGetElementType(LLVMTypeRef ty);
-LLVMTypeRef LLVMStructType(LLVMTypeRef* ty, unsigned elemCount, int Packed);
+LLVMTypeRef LLVMStructType(LLVMTypeRef* ty, int elemCount, int Packed);
 LLVMTypeRef LLVMStructCreateNamed(LLVMContextRef ctx, const char* name);
 int LLVMGetTypeKind(LLVMTypeRef ty);
+LLVMValueRef LLVMGetParam(LLVMValueRef Fn, int Index);
 
 // Values
 LLVMValueRef LLVMGetPoison(LLVMTypeRef ty);
-LLVMValueRef LLVMConstInt(LLVMTypeRef ty, unsigned long long N, int signExtend);
+LLVMValueRef LLVMConstInt(LLVMTypeRef ty, int N, bool signExtend);
 LLVMValueRef LLVMConstIntOfString(LLVMTypeRef ty, const char* Text, int Radix);
-LLVMValueRef LLVMConstString(const char* value, unsigned len,
-                             int DontNullTerminate);
-LLVMValueRef LLVMGetParam(LLVMValueRef fn, unsigned index);
+LLVMValueRef LLVMConstString(const char* value, int len, int DontNullTerminate);
 LLVMValueRef LLVMConstNull(LLVMTypeRef Ty);
 
 // Variables
@@ -137,7 +138,7 @@ int TOKEN_STRING = 4;
 int TOKEN_VARARGS = 5;
 int TOKEN_SYMBOL = 6;
 
-bool has_returned = 0;
+bool has_returned = false;
 
 int LLVMArrayTypeKind = 11;
 int LLVMPointerTypeKind = 12;
@@ -307,6 +308,11 @@ void lex_next() {
 
         if ((_curch == _buffer[0] && _curch != '!') || _curch == '=')
             lex_eat_char();
+    } else if (_curch == '(' || _curch == ')' || _curch == '{' ||
+               _curch == '}' || _curch == '[' || _curch == ']' ||
+               _curch == ',' || _curch == ';') {
+        lex_eat_char();
+        _token = TOKEN_SYMBOL;
     } else
         lex_eat_char();
 
@@ -435,26 +441,37 @@ bool binds_tighter(int right) {
     return precedence() > right;
 }
 
-LLVMValueRef expr();
+LLVMValueRef expr(int right);
+
+bool is_closed() {
+    if (_token != TOKEN_SYMBOL) return false;
+    return try_match(")");
+}
 
 LLVMValueRef funcall(char* name) {
     LLVMValueRef argv[8];
     int argc = 0;
 
-    while (!try_match(")")) {
-        argv[argc++] = expr(0);
-
-        try_match(",");
-    }
-
     LLVMValueRef func = LLVMGetNamedFunction(_module, name);
     LLVMTypeRef fty = LLVMTypeOf(func);
     LLVMTypeRef retty = LLVMGetReturnType(fty);
 
+    while (!is_closed()) {
+        if (try_match("NULL")) {
+            LLVMValueRef null =
+                LLVMConstNull(LLVMTypeOf(LLVMGetParam(func, argc)));
+            argv[argc++] = null;
+        } else {
+            argv[argc++] = expr(0);
+        }
+
+        try_match(",");
+    }
+
     return LLVMBuildCall2(_builder, retty, func, argv, argc, "");
 }
 
-int is_indexable(LLVMValueRef value) {
+bool is_indexable(LLVMValueRef value) {
     int kind = LLVMGetTypeKind(LLVMTypeOf(value));
 
     if (kind == LLVMArrayTypeKind || kind == LLVMPointerTypeKind) return true;
@@ -601,6 +618,9 @@ LLVMValueRef rhs(LLVMValueRef left) {
         return LLVMBuildICmp(_builder, LLVMIntSGE, left, expr(prec), "");
     } else if (!strcmp(op, "==")) {
         read();
+
+        if (try_match("NULL")) return LLVMConstNull(LLVMTypeOf(left));
+
         return LLVMBuildICmp(_builder, LLVMIntEQ, left, expr(prec), "");
     } else if (!strcmp(op, "&")) {
         read();
@@ -621,9 +641,9 @@ LLVMValueRef rhs(LLVMValueRef left) {
         return LLVMBuildOr(_builder,
                            LLVMBuildTrunc(_builder, left, LLVMInt1Type(), ""),
                            expr(prec), "");
-    }
+    } else
+        error("Unhandled op %s");
 
-    error("Unhandled op %s");
     return LLVMGetPoison(LLVMVoidType());
 }
 
@@ -649,10 +669,10 @@ LLVMValueRef expr(int prec) {
             error("Symbol %s not declared");
         }
 
-        LLVMValueRef right = expr(0);
-        LLVMBuildStore(_builder, right, ref);
+        LLVMValueRef right1 = expr(0);
+        LLVMBuildStore(_builder, right1, ref);
 
-        left = right;
+        left = right1;
     } else if (try_match("++")) {
         if (global != -1) {
             ref = global_refs[global];
@@ -662,11 +682,11 @@ LLVMValueRef expr(int prec) {
             error("Symbol %s not declared");
         }
 
-        LLVMValueRef right = LLVMBuildAdd(
+        LLVMValueRef right2 = LLVMBuildAdd(
             _builder, left, LLVMConstInt(LLVMInt32Type(), 1, false), "");
-        LLVMBuildStore(_builder, right, ref);
+        LLVMBuildStore(_builder, right2, ref);
 
-        left = right;
+        left = right2;
     } else if (try_match("--")) {
         if (global != -1) {
             ref = global_refs[global];
@@ -676,11 +696,11 @@ LLVMValueRef expr(int prec) {
             error("Symbol %s not declared");
         }
 
-        LLVMValueRef right = LLVMBuildSub(
+        LLVMValueRef right3 = LLVMBuildSub(
             _builder, left, LLVMConstInt(LLVMInt32Type(), 1, false), "");
-        LLVMBuildStore(_builder, right, ref);
+        LLVMBuildStore(_builder, right3, ref);
 
-        left = right;
+        left = right3;
     } else if (try_match("(")) {
         LLVMValueRef ret = expr(0);
         match(")");
@@ -727,7 +747,7 @@ void branch() {
     LLVMPositionBuilderAtEnd(_builder, end_block);
 }
 
-bool in_while = 0;
+bool in_while = false;
 LLVMBasicBlockRef while_end;
 
 void while_loop() {
@@ -857,7 +877,12 @@ void line() {
                 new_local(name, ptr);
 
                 if (try_match("=")) {
-                    LLVMValueRef val = expr(0);
+                    LLVMValueRef val = NULL;
+
+                    if (try_match("NULL"))
+                        val = LLVMConstNull(ty);
+                    else
+                        val = expr(0);
 
                     if (LLVMTypeOf(val) == LLVMPointerType(LLVMInt8Type(), 0) &&
                         LLVMGetTypeKind(ty) == LLVMPointerTypeKind)
@@ -895,9 +920,17 @@ void line() {
                                         indices, 1, "");
                 }
 
-                if (try_match("="))
-                    LLVMBuildStore(_builder, expr(0), ref);
-                else if (try_match("(")) {
+                if (try_match("=")) {
+                    LLVMValueRef val = expr(0);
+                    LLVMTypeRef destTy = LLVMTypeOf(ref);
+
+                    if (LLVMTypeOf(val) == LLVMPointerType(LLVMInt8Type(), 0) &&
+                        LLVMGetTypeKind(destTy) == LLVMPointerTypeKind)
+                        val = LLVMBuildPointerCast(
+                            _builder, val, LLVMGetElementType(destTy), "");
+
+                    LLVMBuildStore(_builder, val, ref);
+                } else if (try_match("(")) {
                     if (global == -1)
                         errorb("could not find function %s\n", ident);
                     else if (is_fn[global] != true)
@@ -1050,7 +1083,7 @@ int main(int argc, char** argv) {
     lex_next_char();
     lex_next();
 
-    sym_init(512);
+    sym_init(4096);
 
     gen();
 
