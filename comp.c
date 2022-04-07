@@ -251,7 +251,11 @@ void lex_next() {
         _token = TOKEN_INT;
         lex_eat_char();
 
-        while (isdigit(_curch) && !feof(_input)) lex_eat_char();
+        if (_curch == '-') {
+            _token = TOKEN_SYMBOL;
+            lex_eat_char();
+        } else
+            while (isdigit(_curch) && !feof(_input)) lex_eat_char();
     } else if (_curch == '\'') {
         lex_next_char();
         if (_curch == '\'') {
@@ -594,26 +598,55 @@ LLVMValueRef expr(int prec) {
     char* ident = strdup(_buffer);
     LLVMValueRef left = atom();
 
+    int local = sym_lookup(locals, local_no, ident);
+    int global = sym_lookup(globals, global_no, ident);
+    LLVMValueRef ref;
+
     if (try_match("=")) {
-        int local = sym_lookup(locals, local_no, ident);
-        int global = sym_lookup(globals, global_no, ident);
-
-        LLVMValueRef right;
-
         if (global != -1) {
-            LLVMValueRef ref = global_refs[global];
-            right = expr(0);
-
-            LLVMBuildStore(_builder, right, ref);
+            ref = global_refs[global];
         } else if (local != -1) {
-            LLVMValueRef ref = local_refs[local];
-            right = expr(0);
-
-            LLVMBuildStore(_builder, right, ref);
-        } else
+            ref = local_refs[local];
+        } else {
             error("Symbol %s not declared");
+        }
+
+        LLVMValueRef right = expr(0);
+        LLVMBuildStore(_builder, right, ref);
 
         return right;
+    } else if (try_match("++")) {
+        if (global != -1) {
+            ref = global_refs[global];
+        } else if (local != -1) {
+            ref = local_refs[local];
+        } else {
+            error("Symbol %s not declared");
+        }
+
+        LLVMValueRef right = LLVMBuildAdd(
+            _builder, left, LLVMConstInt(LLVMInt32Type(), 1, false), "");
+        LLVMBuildStore(_builder, right, ref);
+
+        return right;
+    } else if (try_match("--")) {
+        if (global != -1) {
+            ref = global_refs[global];
+        } else if (local != -1) {
+            ref = local_refs[local];
+        } else {
+            error("Symbol %s not declared");
+        }
+
+        LLVMValueRef right = LLVMBuildSub(
+            _builder, left, LLVMConstInt(LLVMInt32Type(), 1, false), "");
+        LLVMBuildStore(_builder, right, ref);
+
+        return right;
+    } else if (try_match("(")) {
+        LLVMValueRef ret = expr(0);
+        match(")");
+        return ret;
     }
 
     while (binds_tighter(prec)) left = rhs(left);
@@ -624,23 +657,33 @@ LLVMValueRef expr(int prec) {
 void block();
 
 void branch() {
-    require(try_match("("), "expected (");
-    LLVMValueRef val = expr(0);
-    require(try_match(")"), "expected )");
+    match("(");
+    LLVMValueRef cond = expr(0);
+    match(")");
 
-    LLVMBasicBlockRef then = LLVMAppendBasicBlock(_function, "then");
-    LLVMBasicBlockRef els = LLVMAppendBasicBlock(_function, "else");
+    LLVMBasicBlockRef then_block = LLVMAppendBasicBlock(_function, "then");
+    LLVMBasicBlockRef else_block = LLVMAppendBasicBlock(_function, "else");
+    LLVMBasicBlockRef end_block = LLVMAppendBasicBlock(_function, "end");
 
-    LLVMBuildCondBr(_builder, LLVMBuildTrunc(_builder, val, LLVMInt1Type(), ""),
-                    then, els);
+    LLVMBuildCondBr(_builder,
+                    LLVMBuildTrunc(_builder, cond, LLVMInt1Type(), ""),
+                    then_block, else_block);
 
-    LLVMPositionBuilderAtEnd(_builder, then);
-
+    LLVMPositionBuilderAtEnd(_builder, then_block);
     block();
+    if (!has_returned) LLVMBuildBr(_builder, end_block);
 
-    if (!has_returned) LLVMBuildBr(_builder, els);
-    LLVMPositionBuilderAtEnd(_builder, els);
+    LLVMPositionBuilderAtEnd(_builder, else_block);
+    if (try_match("else")) {
+        block();
+    }
+    LLVMBuildBr(_builder, end_block);
+
+    LLVMPositionBuilderAtEnd(_builder, end_block);
 }
+
+bool in_while = 0;
+LLVMBasicBlockRef while_end;
 
 void while_loop() {
     LLVMBasicBlockRef cond = LLVMAppendBasicBlock(_function, "cond");
@@ -661,7 +704,11 @@ void while_loop() {
 
     LLVMPositionBuilderAtEnd(_builder, body);
 
+    in_while = true;
+    while_end = end;
     block();
+    in_while = false;
+    has_returned = false;
 
     if (!has_returned) LLVMBuildBr(_builder, cond);
     LLVMPositionBuilderAtEnd(_builder, end);
@@ -727,6 +774,13 @@ void line() {
         branch();
     } else if (try_match("while")) {
         while_loop();
+    } else if (try_match("break")) {
+        if (!in_while) error("break outside of while");
+
+        LLVMBuildBr(_builder, while_end);
+        match(";");
+
+        has_returned = true;
     } else if (_token == TOKEN_IDENT) {
         char* ident = strdup(_buffer);
         LLVMTypeRef ty = type(true);
@@ -800,8 +854,28 @@ void line() {
                         errorb("%s is not a function\n", ident);
                     else
                         funcall(ident);
+                } else if (try_match("++")) {
+                    LLVMTypeRef ty = LLVMGetElementType(LLVMTypeOf(ref));
+
+                    LLVMValueRef val = LLVMBuildLoad2(_builder, ty, ref, "");
+                    LLVMValueRef const1 = LLVMConstInt(ty, 1, false);
+
+                    LLVMValueRef incremented =
+                        LLVMBuildAdd(_builder, val, const1, "");
+
+                    LLVMBuildStore(_builder, incremented, ref);
+                } else if (try_match("--")) {
+                    LLVMTypeRef ty = LLVMGetElementType(LLVMTypeOf(ref));
+
+                    LLVMValueRef val = LLVMBuildLoad2(_builder, ty, ref, "");
+                    LLVMValueRef const1 = LLVMConstInt(ty, 1, false);
+
+                    LLVMValueRef incremented =
+                        LLVMBuildSub(_builder, val, const1, "");
+
+                    LLVMBuildStore(_builder, incremented, ref);
                 } else
-                    error("statement expected");
+                    error("statement expected\n");
             }
         }
         match(";");
