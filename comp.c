@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,8 +10,6 @@ typedef struct LLVMValue* LLVMValueRef;
 typedef struct LLVMBuilder* LLVMBuilderRef;
 typedef struct LLVMBasicBlock* LLVMBasicBlockRef;
 typedef struct LLVMContext* LLVMContextRef;
-
-typedef int bool;
 
 int LLVMPrintMessageAction = 1;
 
@@ -76,6 +75,9 @@ LLVMValueRef LLVMBuildOr(LLVMBuilderRef, LLVMValueRef LHS, LLVMValueRef RHS,
                          const char* Name);
 LLVMValueRef LLVMBuildXor(LLVMBuilderRef, LLVMValueRef LHS, LLVMValueRef RHS,
                           const char* Name);
+LLVMValueRef LLVMBuildNSWNeg(LLVMBuilderRef, LLVMValueRef V, const char* Name);
+LLVMValueRef LLVMBuildZExt(LLVMBuilderRef, LLVMValueRef Val, LLVMTypeRef DestTy,
+                           const char* Name);
 
 // Diagnostics
 char* LLVMPrintModuleToString(LLVMModuleRef module);
@@ -134,9 +136,6 @@ int TOKEN_CHAR = 3;
 int TOKEN_STRING = 4;
 int TOKEN_VARARGS = 5;
 int TOKEN_SYMBOL = 6;
-
-bool true = 1;
-bool false = 0;
 
 bool has_returned = 0;
 
@@ -207,6 +206,12 @@ void lex_eat_escape() {
             _buffer[_buflength++] = '\n';
         else if (_curch == '0' && !feof(_input))
             _buffer[_buflength++] = '\0';
+        else if (_curch == '\\' && !feof(_input))
+            _buffer[_buflength++] = '\\';
+        else if (_curch == '\r' && !feof(_input))
+            _buffer[_buflength++] = '\r';
+        else if (_curch == '\t' && !feof(_input))
+            _buffer[_buflength++] = '\t';
         lex_next_char();
     } else
         lex_eat_char();
@@ -330,7 +335,7 @@ bool try_match(char* look) {
     return 0;
 }
 
-bool waiting_for(char* look) { return !peek_tok(look) & !feof(_input); }
+bool waiting_for(char* look) { return !peek_tok(look) && !feof(_input); }
 
 char** locals;
 int local_no = 0;
@@ -394,7 +399,7 @@ int sym_lookup(char** table, int table_size, char* look) {
     int i = 0;
 
     while (i < table_size)
-        if (!strncmp(table[i++], look, strlen(look))) return i - 1;
+        if (!strcmp(table[i++], look)) return i - 1;
 
     return -1;
 }
@@ -467,30 +472,41 @@ LLVMValueRef atom() {
     LLVMValueRef ret = LLVMGetPoison(LLVMVoidType());
     char* what = strdup(_buffer);
 
+    bool do_negate = false;
+
+    if (_token == TOKEN_SYMBOL)
+        if (try_match("!")) do_negate = true;
+
     if (_token == TOKEN_IDENT) {
         char* sym = strdup(_buffer);
         read();
 
-        int global = sym_lookup(globals, global_no, sym);
-        int lookup = sym_lookup(locals, local_no, sym);
+        if (!strcmp(sym, "true"))
+            ret = LLVMConstInt(LLVMInt1Type(), 1, 0);
+        else if (!strcmp(sym, "false"))
+            ret = LLVMConstInt(LLVMInt1Type(), 1, 0);
+        else {
+            int global = sym_lookup(globals, global_no, sym);
+            int lookup = sym_lookup(locals, local_no, sym);
 
-        if (lookup > -1 && lookup < arg_no) {
-            ret = LLVMGetParam(_function, lookup);
-        } else if (lookup != -1) {
-            LLVMValueRef ref = local_refs[lookup];
+            if (lookup > -1 && lookup < arg_no) {
+                ret = LLVMGetParam(_function, lookup);
+            } else if (lookup != -1) {
+                LLVMValueRef ref = local_refs[lookup];
 
-            ret = LLVMBuildLoad2(_builder, LLVMGetElementType(LLVMTypeOf(ref)),
-                                 ref, "");
-        } else if (global != -1) {
-            LLVMValueRef ref = global_refs[global];
-
-            if (try_match("(")) {
-                ret = funcall(sym);
-            } else
                 ret = LLVMBuildLoad2(
                     _builder, LLVMGetElementType(LLVMTypeOf(ref)), ref, "");
-        } else
-            error("Symbol %s not declared");
+            } else if (global != -1) {
+                LLVMValueRef ref = global_refs[global];
+
+                if (try_match("(")) {
+                    ret = funcall(sym);
+                } else
+                    ret = LLVMBuildLoad2(
+                        _builder, LLVMGetElementType(LLVMTypeOf(ref)), ref, "");
+            } else
+                error("Symbol %s not declared\n");
+        }
     } else if (_token == TOKEN_INT) {
         char* val = strdup(_buffer);
         read();
@@ -518,6 +534,10 @@ LLVMValueRef atom() {
         LLVMValueRef val = expr(0);
 
         ret = LLVMBuildNeg(_builder, val, "");
+    } else if (try_match("(")) {
+        LLVMValueRef val = expr(0);
+        match(")");
+        return val;
     } else {
         error("expected an atom, found '%s'");
 
@@ -528,7 +548,6 @@ LLVMValueRef atom() {
         if (is_indexable(ret)) {
             LLVMValueRef indices[1];
             indices[0] = expr(0);
-            LLVMDumpType(LLVMGetElementType(LLVMTypeOf(ret)));
             LLVMTypeRef inner = LLVMGetElementType(LLVMTypeOf(ret));
 
             ret = LLVMBuildLoad2(
@@ -538,6 +557,10 @@ LLVMValueRef atom() {
             errorb("%s is not indexable", what);
         match("]");
     }
+
+    if (do_negate)
+        ret = LLVMBuildICmp(_builder, LLVMIntEQ, ret,
+                            LLVMConstInt(LLVMInt1Type(), 0, false), "");
 
     return ret;
 }
@@ -588,6 +611,16 @@ LLVMValueRef rhs(LLVMValueRef left) {
     } else if (!strcmp(op, "^")) {
         read();
         return LLVMBuildXor(_builder, left, expr(prec), "");
+    } else if (!strcmp(op, "&&")) {
+        read();
+        return LLVMBuildAnd(_builder,
+                            LLVMBuildTrunc(_builder, left, LLVMInt1Type(), ""),
+                            expr(prec), "");
+    } else if (!strcmp(op, "||")) {
+        read();
+        return LLVMBuildOr(_builder,
+                           LLVMBuildTrunc(_builder, left, LLVMInt1Type(), ""),
+                           expr(prec), "");
     }
 
     error("Unhandled op %s");
@@ -595,6 +628,11 @@ LLVMValueRef rhs(LLVMValueRef left) {
 }
 
 LLVMValueRef expr(int prec) {
+    bool do_negate = false;
+
+    if (_token == TOKEN_SYMBOL)
+        if (try_match("!")) do_negate = true;
+
     char* ident = strdup(_buffer);
     LLVMValueRef left = atom();
 
@@ -614,7 +652,7 @@ LLVMValueRef expr(int prec) {
         LLVMValueRef right = expr(0);
         LLVMBuildStore(_builder, right, ref);
 
-        return right;
+        left = right;
     } else if (try_match("++")) {
         if (global != -1) {
             ref = global_refs[global];
@@ -628,7 +666,7 @@ LLVMValueRef expr(int prec) {
             _builder, left, LLVMConstInt(LLVMInt32Type(), 1, false), "");
         LLVMBuildStore(_builder, right, ref);
 
-        return right;
+        left = right;
     } else if (try_match("--")) {
         if (global != -1) {
             ref = global_refs[global];
@@ -642,12 +680,16 @@ LLVMValueRef expr(int prec) {
             _builder, left, LLVMConstInt(LLVMInt32Type(), 1, false), "");
         LLVMBuildStore(_builder, right, ref);
 
-        return right;
+        left = right;
     } else if (try_match("(")) {
         LLVMValueRef ret = expr(0);
         match(")");
-        return ret;
+        left = ret;
     }
+
+    if (do_negate)
+        left = LLVMBuildICmp(_builder, LLVMIntEQ, left,
+                             LLVMConstInt(LLVMInt1Type(), 0, false), "");
 
     while (binds_tighter(prec)) left = rhs(left);
 
@@ -671,7 +713,10 @@ void branch() {
 
     LLVMPositionBuilderAtEnd(_builder, then_block);
     block();
-    if (!has_returned) LLVMBuildBr(_builder, end_block);
+    if (!has_returned)
+        LLVMBuildBr(_builder, end_block);
+    else
+        has_returned = false;
 
     LLVMPositionBuilderAtEnd(_builder, else_block);
     if (try_match("else")) {
@@ -710,7 +755,10 @@ void while_loop() {
     in_while = false;
     has_returned = false;
 
-    if (!has_returned) LLVMBuildBr(_builder, cond);
+    if (!has_returned)
+        LLVMBuildBr(_builder, cond);
+    else
+        has_returned = false;
     LLVMPositionBuilderAtEnd(_builder, end);
 }
 
@@ -730,6 +778,8 @@ LLVMTypeRef type(bool suppress) {
     else if (try_match("struct")) {
         ret = LLVMStructCreateNamed(LLVMGetGlobalContext(), strdup(_buffer));
         read();
+    } else if (try_match("bool")) {
+        ret = LLVMInt1Type();
     }
 
     if (ret == 0) {
@@ -939,8 +989,10 @@ void decl(int context) {
 
             if (_function == 0) {
                 _function = LLVMAddFunction(_module, ident, fnty);
-                new_fn(ident, _function);
             }
+
+            if (sym_lookup(globals, global_no, ident) == -1)
+                new_fn(ident, _function);
 
             int is_main = !strncmp("main", ident, sizeof("main"));
 
@@ -987,7 +1039,7 @@ void gen() {
 
 int main(int argc, char** argv) {
     if (argc != 3) {
-        printf("Usage: %s <file> <out>", argv[0]);
+        printf("Usage: %s <file> <out>\n", argv[0]);
         return 1;
     }
 
