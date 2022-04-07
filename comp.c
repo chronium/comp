@@ -12,7 +12,7 @@ typedef struct LLVMContext* LLVMContextRef;
 
 typedef int bool;
 
-#define LLVMPrintMessageAction 1
+int LLVMPrintMessageAction = 1;
 
 typedef int LLVMIntPredicate;
 
@@ -70,6 +70,12 @@ LLVMValueRef LLVMBuildPointerCast(LLVMBuilderRef, LLVMValueRef Val,
                                   LLVMTypeRef DestTy, const char* Name);
 LLVMValueRef LLVMBuildArrayAlloca(LLVMBuilderRef, LLVMTypeRef Ty,
                                   LLVMValueRef Val, const char* Name);
+LLVMValueRef LLVMBuildAnd(LLVMBuilderRef, LLVMValueRef LHS, LLVMValueRef RHS,
+                          const char* Name);
+LLVMValueRef LLVMBuildOr(LLVMBuilderRef, LLVMValueRef LHS, LLVMValueRef RHS,
+                         const char* Name);
+LLVMValueRef LLVMBuildXor(LLVMBuilderRef, LLVMValueRef LHS, LLVMValueRef RHS,
+                          const char* Name);
 
 // Diagnostics
 char* LLVMPrintModuleToString(LLVMModuleRef module);
@@ -98,12 +104,14 @@ LLVMValueRef LLVMConstIntOfString(LLVMTypeRef ty, const char* Text, int Radix);
 LLVMValueRef LLVMConstString(const char* value, unsigned len,
                              int DontNullTerminate);
 LLVMValueRef LLVMGetParam(LLVMValueRef fn, unsigned index);
+LLVMValueRef LLVMConstNull(LLVMTypeRef Ty);
 
 // Variables
 LLVMValueRef LLVMAddGlobal(LLVMModuleRef module, LLVMTypeRef ty,
                            const char* name);
 LLVMValueRef LLVMSetInitializer(LLVMValueRef GlobalVar,
                                 LLVMValueRef ConstantVal);
+void LLVMSetExternallyInitialized(LLVMValueRef GlobalVar, bool IsExtInit);
 
 LLVMModuleRef _module;
 LLVMBuilderRef _builder;
@@ -552,6 +560,30 @@ LLVMValueRef rhs(LLVMValueRef left) {
     } else if (!strcmp(op, "!=")) {
         read();
         return LLVMBuildICmp(_builder, LLVMIntNE, left, expr(prec), "");
+    } else if (!strcmp(op, "<")) {
+        read();
+        return LLVMBuildICmp(_builder, LLVMIntSLT, left, expr(prec), "");
+    } else if (!strcmp(op, "<=")) {
+        read();
+        return LLVMBuildICmp(_builder, LLVMIntSLE, left, expr(prec), "");
+    } else if (!strcmp(op, ">")) {
+        read();
+        return LLVMBuildICmp(_builder, LLVMIntSGT, left, expr(prec), "");
+    } else if (!strcmp(op, ">=")) {
+        read();
+        return LLVMBuildICmp(_builder, LLVMIntSGE, left, expr(prec), "");
+    } else if (!strcmp(op, "==")) {
+        read();
+        return LLVMBuildICmp(_builder, LLVMIntEQ, left, expr(prec), "");
+    } else if (!strcmp(op, "&")) {
+        read();
+        return LLVMBuildAnd(_builder, left, expr(prec), "");
+    } else if (!strcmp(op, "|")) {
+        read();
+        return LLVMBuildOr(_builder, left, expr(prec), "");
+    } else if (!strcmp(op, "^")) {
+        read();
+        return LLVMBuildXor(_builder, left, expr(prec), "");
     }
 
     error("Unhandled op %s");
@@ -585,6 +617,31 @@ void branch() {
 
     if (!has_returned) LLVMBuildBr(_builder, els);
     LLVMPositionBuilderAtEnd(_builder, els);
+}
+
+void while_loop() {
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlock(_function, "cond");
+    LLVMBasicBlockRef body = LLVMAppendBasicBlock(_function, "body");
+    LLVMBasicBlockRef end = LLVMAppendBasicBlock(_function, "end");
+
+    LLVMBuildBr(_builder, cond);
+
+    LLVMPositionBuilderAtEnd(_builder, cond);
+
+    require(try_match("("), "expected (");
+    LLVMValueRef cond_val = expr(0);
+    require(try_match(")"), "expected )");
+
+    LLVMBuildCondBr(_builder,
+                    LLVMBuildTrunc(_builder, cond_val, LLVMInt1Type(), ""),
+                    body, end);
+
+    LLVMPositionBuilderAtEnd(_builder, body);
+
+    block();
+
+    if (!has_returned) LLVMBuildBr(_builder, cond);
+    LLVMPositionBuilderAtEnd(_builder, end);
 }
 
 LLVMTypeRef type(bool suppress) {
@@ -645,6 +702,8 @@ void line() {
         match(";");
     } else if (try_match("if")) {
         branch();
+    } else if (try_match("while")) {
+        while_loop();
     } else if (_token == TOKEN_IDENT) {
         char* ident = strdup(_buffer);
         LLVMTypeRef ty = type(true);
@@ -813,7 +872,8 @@ void decl(int context) {
             if (try_match("=")) {
                 LLVMValueRef val = expr(0);
                 LLVMSetInitializer(global, val);
-            }
+            } else
+                LLVMSetInitializer(global, LLVMConstNull(retty));
 
             new_global(ident, global);
         }
