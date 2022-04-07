@@ -93,7 +93,7 @@ LLVMTypeRef LLVMInt1Type();
 LLVMTypeRef LLVMVoidType();
 LLVMTypeRef LLVMPointerType(LLVMTypeRef ty, int AddressSpace);
 LLVMTypeRef LLVMFunctionType(LLVMTypeRef ret, LLVMTypeRef* args, int ParamCount,
-                             int IsVarArg);
+                             bool IsVarArg);
 LLVMTypeRef LLVMTypeOf(LLVMValueRef val);
 LLVMTypeRef LLVMGetReturnType(LLVMTypeRef ty);
 LLVMTypeRef LLVMGetElementType(LLVMTypeRef ty);
@@ -457,12 +457,18 @@ LLVMValueRef funcall(char* name) {
     LLVMTypeRef retty = LLVMGetReturnType(fty);
 
     while (!is_closed()) {
+        LLVMValueRef param = LLVMGetParam(func, argc);
         if (try_match("NULL")) {
-            LLVMValueRef null =
-                LLVMConstNull(LLVMTypeOf(LLVMGetParam(func, argc)));
+            LLVMValueRef null = LLVMConstNull(LLVMTypeOf(param));
             argv[argc++] = null;
         } else {
-            argv[argc++] = expr(0);
+            LLVMValueRef val = expr(0);
+
+            if (LLVMTypeOf(val) == LLVMInt8Type() &&
+                LLVMTypeOf(param) == LLVMInt32Type())
+                val = LLVMBuildZExt(_builder, val, LLVMTypeOf(param), "");
+
+            argv[argc++] = val;
         }
 
         try_match(",");
@@ -486,6 +492,10 @@ LLVMValueRef deref_value(LLVMValueRef value) {
 }
 
 LLVMValueRef atom() {
+    LLVMValueRef ref = NULL;
+    LLVMValueRef llval = NULL;
+    char* cval = NULL;
+    char ival;
     LLVMValueRef ret = LLVMGetPoison(LLVMVoidType());
     char* what = strdup(_buffer);
 
@@ -499,9 +509,9 @@ LLVMValueRef atom() {
         read();
 
         if (!strcmp(sym, "true"))
-            ret = LLVMConstInt(LLVMInt1Type(), 1, 0);
+            ret = LLVMConstInt(LLVMInt1Type(), 1, false);
         else if (!strcmp(sym, "false"))
-            ret = LLVMConstInt(LLVMInt1Type(), 1, 0);
+            ret = LLVMConstInt(LLVMInt1Type(), 1, false);
         else {
             int global = sym_lookup(globals, global_no, sym);
             int lookup = sym_lookup(locals, local_no, sym);
@@ -509,12 +519,12 @@ LLVMValueRef atom() {
             if (lookup > -1 && lookup < arg_no) {
                 ret = LLVMGetParam(_function, lookup);
             } else if (lookup != -1) {
-                LLVMValueRef ref = local_refs[lookup];
+                ref = local_refs[lookup];
 
                 ret = LLVMBuildLoad2(
                     _builder, LLVMGetElementType(LLVMTypeOf(ref)), ref, "");
             } else if (global != -1) {
-                LLVMValueRef ref = global_refs[global];
+                ref = global_refs[global];
 
                 if (try_match("(")) {
                     ret = funcall(sym);
@@ -525,40 +535,35 @@ LLVMValueRef atom() {
                 error("Symbol %s not declared\n");
         }
     } else if (_token == TOKEN_INT) {
-        char* val = strdup(_buffer);
+        cval = strdup(_buffer);
         read();
 
-        ret = LLVMConstIntOfString(LLVMInt32Type(), val, 10);
+        ret = LLVMConstIntOfString(LLVMInt32Type(), cval, 10);
     } else if (_token == TOKEN_CHAR) {
-        int val = _buffer[0];
+        ival = _buffer[0];
         read();
 
-        ret = LLVMConstInt(LLVMInt8Type(), val, false);
+        ret = LLVMConstInt(LLVMInt8Type(), ival, false);
     } else if (_token == TOKEN_STRING) {
-        char* val = strdup(_buffer);
+        cval = strdup(_buffer);
         read();
-        val[strlen(val)] = '\0';
+        cval[strlen(cval)] = '\0';
 
-        ret = LLVMBuildGlobalStringPtr(_builder, val, "");
+        ret = LLVMBuildGlobalStringPtr(_builder, cval, "");
     } else if (try_match("*")) {
-        LLVMValueRef val = expr(0);
+        llval = expr(0);
 
-        if (is_indexable(val))
-            ret = deref_value(val);
+        if (is_indexable(llval))
+            ret = deref_value(llval);
         else
             error("Expected derefable value");
     } else if (try_match("!")) {
-        LLVMValueRef val = expr(0);
+        llval = expr(0);
 
-        ret = LLVMBuildNeg(_builder, val, "");
+        ret = LLVMBuildNeg(_builder, llval, "");
     } else if (try_match("(")) {
-        LLVMValueRef val = expr(0);
+        ret = expr(0);
         match(")");
-        return val;
-    } else {
-        error("expected an atom, found '%s'");
-
-        return ret;
     }
 
     if (try_match("[")) {
@@ -685,8 +690,6 @@ LLVMValueRef expr(int prec) {
         LLVMValueRef right2 = LLVMBuildAdd(
             _builder, left, LLVMConstInt(LLVMInt32Type(), 1, false), "");
         LLVMBuildStore(_builder, right2, ref);
-
-        left = right2;
     } else if (try_match("--")) {
         if (global != -1) {
             ref = global_refs[global];
@@ -699,8 +702,6 @@ LLVMValueRef expr(int prec) {
         LLVMValueRef right3 = LLVMBuildSub(
             _builder, left, LLVMConstInt(LLVMInt32Type(), 1, false), "");
         LLVMBuildStore(_builder, right3, ref);
-
-        left = right3;
     } else if (try_match("(")) {
         LLVMValueRef ret = expr(0);
         match(")");
@@ -829,6 +830,10 @@ LLVMTypeRef type(bool suppress) {
 }
 
 void line() {
+    LLVMValueRef val = NULL;
+    LLVMTypeRef ty = NULL;
+    LLVMValueRef ptr = NULL;
+
     if (try_match("return")) {
         has_returned = true;
 
@@ -853,7 +858,7 @@ void line() {
         has_returned = true;
     } else if (_token == TOKEN_IDENT) {
         char* ident = strdup(_buffer);
-        LLVMTypeRef ty = type(true);
+        ty = type(true);
 
         if (_token == TOKEN_IDENT && ty != LLVMVoidType()) {
             char* name = strdup(_buffer);
@@ -866,19 +871,16 @@ void line() {
 
                 LLVMValueRef slot =
                     LLVMBuildAlloca(_builder, LLVMPointerType(ty, 0), name);
-                LLVMValueRef ptr =
-                    LLVMBuildArrayAlloca(_builder, ty, count, name);
+                ptr = LLVMBuildArrayAlloca(_builder, ty, count, name);
 
                 LLVMBuildStore(_builder, ptr, slot);
 
                 new_local(name, slot);
             } else {
-                LLVMValueRef ptr = LLVMBuildAlloca(_builder, ty, name);
+                ptr = LLVMBuildAlloca(_builder, ty, name);
                 new_local(name, ptr);
 
                 if (try_match("=")) {
-                    LLVMValueRef val = NULL;
-
                     if (try_match("NULL"))
                         val = LLVMConstNull(ty);
                     else
@@ -921,7 +923,7 @@ void line() {
                 }
 
                 if (try_match("=")) {
-                    LLVMValueRef val = expr(0);
+                    val = expr(0);
                     LLVMTypeRef destTy = LLVMTypeOf(ref);
 
                     if (LLVMTypeOf(val) == LLVMPointerType(LLVMInt8Type(), 0) &&
@@ -940,7 +942,7 @@ void line() {
                 } else if (try_match("++")) {
                     LLVMTypeRef ty = LLVMGetElementType(LLVMTypeOf(ref));
 
-                    LLVMValueRef val = LLVMBuildLoad2(_builder, ty, ref, "");
+                    val = LLVMBuildLoad2(_builder, ty, ref, "");
                     LLVMValueRef const1 = LLVMConstInt(ty, 1, false);
 
                     LLVMValueRef incremented =
@@ -950,13 +952,13 @@ void line() {
                 } else if (try_match("--")) {
                     LLVMTypeRef ty = LLVMGetElementType(LLVMTypeOf(ref));
 
-                    LLVMValueRef val = LLVMBuildLoad2(_builder, ty, ref, "");
-                    LLVMValueRef const1 = LLVMConstInt(ty, 1, false);
+                    val = LLVMBuildLoad2(_builder, ty, ref, "");
+                    LLVMValueRef const2 = LLVMConstInt(ty, 1, false);
 
-                    LLVMValueRef incremented =
-                        LLVMBuildSub(_builder, val, const1, "");
+                    LLVMValueRef decremented =
+                        LLVMBuildSub(_builder, val, const2, "");
 
-                    LLVMBuildStore(_builder, incremented, ref);
+                    LLVMBuildStore(_builder, decremented, ref);
                 } else
                     error("statement expected\n");
             }
@@ -1027,9 +1029,7 @@ void decl(int context) {
             if (sym_lookup(globals, global_no, ident) == -1)
                 new_fn(ident, _function);
 
-            int is_main = !strncmp("main", ident, sizeof("main"));
-
-            if (is_main)
+            if (!strcmp("main", ident))
                 LLVMPositionBuilderAtEnd(
                     _builder, LLVMAppendBasicBlock(_function, "entry"));
             else
@@ -1100,7 +1100,7 @@ int main(int argc, char** argv) {
         }
 
         if (LLVMWriteBitcodeToFile(_module, argv[2]) != 0) {
-            fprintf(stderr, "error writing bitcode to file, skipping\n");
+            // fprintf(stderr, "error writing bitcode to file, skipping\n");
         }
         LLVMDisposeMessage(dump);
         LLVMDisposeMessage(error);

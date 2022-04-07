@@ -11,7 +11,8 @@ run: ARGS=$(filter-out $@,$(MAKECMDGOALS))
 run: OUT=$(lastword $(ARGS:.c=.bc))
 run: all 
 	valgrind ./comp $(ARGS) $(OUT)
-	lli-12 $(OUT) $(ARGS) $(OUT)
+	#lli-12 $(OUT) $(ARGS) $(OUT)
+	lli-12 $(OUT) straptest.c straptest.bc
 
 tests: comp
 	$(MAKE) --directory=$@

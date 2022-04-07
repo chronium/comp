@@ -1,6 +1,10 @@
-void foo();
+#include <ctype.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-typedef int bool;
+void foo();
 
 typedef struct LLVMModule* LLVMModuleRef;
 typedef struct LLVMType* LLVMTypeRef;
@@ -23,9 +27,6 @@ int test(bool adsf);
 int test(bool adsf) { return 1; }
 
 void free(void* __ptr);
-
-bool true = 1;
-bool false = 0;
 
 char* str_test() { return "hello world"; }
 
