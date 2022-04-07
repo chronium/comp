@@ -591,7 +591,30 @@ LLVMValueRef rhs(LLVMValueRef left) {
 }
 
 LLVMValueRef expr(int prec) {
+    char* ident = strdup(_buffer);
     LLVMValueRef left = atom();
+
+    if (try_match("=")) {
+        int local = sym_lookup(locals, local_no, ident);
+        int global = sym_lookup(globals, global_no, ident);
+
+        LLVMValueRef right;
+
+        if (global != -1) {
+            LLVMValueRef ref = global_refs[global];
+            right = expr(0);
+
+            LLVMBuildStore(_builder, right, ref);
+        } else if (local != -1) {
+            LLVMValueRef ref = local_refs[local];
+            right = expr(0);
+
+            LLVMBuildStore(_builder, right, ref);
+        } else
+            error("Symbol %s not declared");
+
+        return right;
+    }
 
     while (binds_tighter(prec)) left = rhs(left);
 
