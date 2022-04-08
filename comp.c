@@ -336,9 +336,9 @@ void match(char* look) {
 bool try_match(char* look) {
     if (peek_tok(look)) {
         read();
-        return 1;
+        return true;
     }
-    return 0;
+    return false;
 }
 
 bool waiting_for(char* look) { return !peek_tok(look) && !feof(_input); }
@@ -351,7 +351,7 @@ LLVMValueRef* local_refs;
 char** globals;
 int global_no = 0;
 LLVMValueRef* global_refs;
-int* is_fn;
+bool* is_fn;
 
 char** typedefs;
 int typedef_no = 0;
@@ -392,7 +392,7 @@ void new_local(char* ident, LLVMValueRef ref) {
 }
 
 void new_arg(char* ident) {
-    new_local(ident, 0);
+    new_local(ident, NULL);
     arg_no++;
 }
 
@@ -511,7 +511,7 @@ LLVMValueRef atom() {
         if (!strcmp(sym, "true"))
             ret = LLVMConstInt(LLVMInt1Type(), 1, false);
         else if (!strcmp(sym, "false"))
-            ret = LLVMConstInt(LLVMInt1Type(), 1, false);
+            ret = LLVMConstInt(LLVMInt1Type(), 0, false);
         else {
             int global = sym_lookup(globals, global_no, sym);
             int lookup = sym_lookup(locals, local_no, sym);
@@ -624,9 +624,13 @@ LLVMValueRef rhs(LLVMValueRef left) {
     } else if (!strcmp(op, "==")) {
         read();
 
-        if (try_match("NULL")) return LLVMConstNull(LLVMTypeOf(left));
+        LLVMValueRef right;
+        if (try_match("NULL"))
+            right = LLVMConstNull(LLVMTypeOf(left));
+        else
+            right = expr(prec);
 
-        return LLVMBuildICmp(_builder, LLVMIntEQ, left, expr(prec), "");
+        return LLVMBuildICmp(_builder, LLVMIntEQ, left, right, "");
     } else if (!strcmp(op, "&")) {
         read();
         return LLVMBuildAnd(_builder, left, expr(prec), "");
@@ -784,7 +788,7 @@ void while_loop() {
 }
 
 LLVMTypeRef type(bool suppress) {
-    LLVMTypeRef ret = 0;
+    LLVMTypeRef ret = NULL;
     bool is_void = false;
 
     try_match("const");
@@ -803,7 +807,7 @@ LLVMTypeRef type(bool suppress) {
         ret = LLVMInt1Type();
     }
 
-    if (ret == 0) {
+    if (ret == NULL) {
         int lookup = sym_lookup(typedefs, typedef_no, _buffer);
 
         if (lookup != -1) {
@@ -811,7 +815,7 @@ LLVMTypeRef type(bool suppress) {
             read();
         }
 
-        if (ret == 0) {
+        if (ret == NULL) {
             if (!suppress) error("Unknown return type %s\n");
             return LLVMVoidType();
         }
@@ -1022,7 +1026,7 @@ void decl(int context) {
         if (peek_tok("{")) {
             _function = LLVMGetNamedFunction(_module, ident);
 
-            if (_function == 0) {
+            if (_function == NULL) {
                 _function = LLVMAddFunction(_module, ident, fnty);
             }
 
@@ -1109,5 +1113,6 @@ int main(int argc, char** argv) {
     LLVMDisposeBuilder(_builder);
     LLVMDisposeModule(_module);
     lex_drop();
-    return errors != 0;
+    if (errors == 0) return 0;
+    return 1;
 }
