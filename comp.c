@@ -588,6 +588,8 @@ LLVMValueRef atom() {
 }
 
 LLVMValueRef rhs(LLVMValueRef left) {
+    LLVMValueRef right;
+
     int prec = precedence();
 
     if (prec == -1) return left;
@@ -608,7 +610,13 @@ LLVMValueRef rhs(LLVMValueRef left) {
         return LLVMBuildSDiv(_builder, left, expr(prec), "");
     } else if (!strcmp(op, "!=")) {
         read();
-        return LLVMBuildICmp(_builder, LLVMIntNE, left, expr(prec), "");
+
+        if (try_match("NULL"))
+            right = LLVMConstNull(LLVMTypeOf(left));
+        else
+            right = expr(prec);
+
+        return LLVMBuildICmp(_builder, LLVMIntNE, left, right, "");
     } else if (!strcmp(op, "<")) {
         read();
         return LLVMBuildICmp(_builder, LLVMIntSLT, left, expr(prec), "");
@@ -624,7 +632,6 @@ LLVMValueRef rhs(LLVMValueRef left) {
     } else if (!strcmp(op, "==")) {
         read();
 
-        LLVMValueRef right;
         if (try_match("NULL"))
             right = LLVMConstNull(LLVMTypeOf(left));
         else
