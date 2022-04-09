@@ -1,9 +1,3 @@
-#include <ctype.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 typedef struct LLVMModule* LLVMModuleRef;
 typedef struct LLVMType* LLVMTypeRef;
 typedef struct LLVMValue* LLVMValueRef;
@@ -11,9 +5,16 @@ typedef struct LLVMBuilder* LLVMBuilderRef;
 typedef struct LLVMBasicBlock* LLVMBasicBlockRef;
 typedef struct LLVMContext* LLVMContextRef;
 
-int LLVMPrintMessageAction = 1;
-
+typedef struct _IO_FILE FILE;
 typedef int LLVMIntPredicate;
+
+#define bool _Bool
+#define true 1
+#define false 0
+
+#define NULL 0
+
+int LLVMPrintMessageAction = 1;
 
 // Module
 LLVMModuleRef LLVMModuleCreateWithName(const char* name);
@@ -101,6 +102,7 @@ LLVMTypeRef LLVMStructType(LLVMTypeRef* ty, int elemCount, int Packed);
 LLVMTypeRef LLVMStructCreateNamed(LLVMContextRef ctx, const char* name);
 int LLVMGetTypeKind(LLVMTypeRef ty);
 LLVMValueRef LLVMGetParam(LLVMValueRef Fn, int Index);
+bool LLVMIsFunctionVarArg(LLVMTypeRef FunctionTy);
 
 // Values
 LLVMValueRef LLVMGetPoison(LLVMTypeRef ty);
@@ -115,6 +117,40 @@ LLVMValueRef LLVMAddGlobal(LLVMModuleRef module, LLVMTypeRef ty,
 LLVMValueRef LLVMSetInitializer(LLVMValueRef GlobalVar,
                                 LLVMValueRef ConstantVal);
 void LLVMSetExternallyInitialized(LLVMValueRef GlobalVar, bool IsExtInit);
+
+void* malloc(int __size);
+void* calloc(int __nmemb, int __size);
+int printf(const char* fmt, ...);
+int strlen(const char* __s);
+char* strcpy(char* __dest, const char* __src);
+FILE* fopen(const char* __filename, const char* __modes);
+void free(void* __ptr);
+char fgetc(FILE* __stream);
+int ungetc(char __c, FILE* __stream);
+bool feof(FILE* __stream);
+
+bool strcmp(const char* __s1, const char* __s2) {
+    if (__s1 == NULL || __s2 == NULL) return false;
+
+    int i = 0;
+    while (__s1[i] == __s2[i]) {
+        if (__s1[i] == '\0') {
+            return true;
+        }
+        i++;
+    }
+    return false;
+}
+
+bool isalpha(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+bool isdigit(char c) { return c >= '0' && c <= '9'; }
+
+bool isalnum(char c) { return isalpha(c) || isdigit(c); }
+
+char* strdup(const char* str) { return strcpy(malloc(strlen(str) + 1), str); }
 
 LLVMModuleRef _module;
 LLVMBuilderRef _builder;
@@ -153,8 +189,6 @@ LLVMIntPredicate LLVMIntSGT = 38;  // signed greater than
 LLVMIntPredicate LLVMIntSGE = 39;  // signed greater or equal
 LLVMIntPredicate LLVMIntSLT = 40;  // signed less than
 LLVMIntPredicate LLVMIntSLE = 41;  // signed less or equal
-
-char* strdup(const char* str) { return strcpy(malloc(strlen(str) + 1), str); }
 
 void lex_new(char* filename) {
     _filename = strdup(filename);
@@ -321,7 +355,7 @@ void lex_next() {
 
 void read() { lex_next(); }
 
-bool peek_tok(char* look) { return !strcmp(_buffer, look); }
+bool peek_tok(char* look) { return strcmp(_buffer, look); }
 
 void match(char* look) {
     if (!peek_tok(look)) {
@@ -334,6 +368,15 @@ void match(char* look) {
 }
 
 bool try_match(char* look) {
+    if (peek_tok(look)) {
+        read();
+        return true;
+    }
+    return false;
+}
+
+bool try_match_ident(char* look) {
+    if (_token != TOKEN_IDENT) return false;
     if (peek_tok(look)) {
         read();
         return true;
@@ -405,7 +448,7 @@ int sym_lookup(char** table, int table_size, char* look) {
     int i = 0;
 
     while (i < table_size)
-        if (!strcmp(table[i++], look)) return i - 1;
+        if (strcmp(table[i++], look)) return i - 1;
 
     return -1;
 }
@@ -458,15 +501,18 @@ LLVMValueRef funcall(char* name) {
 
     while (!is_closed()) {
         LLVMValueRef param = LLVMGetParam(func, argc);
-        if (try_match("NULL")) {
+
+        if (try_match_ident("NULL")) {
             LLVMValueRef null = LLVMConstNull(LLVMTypeOf(param));
             argv[argc++] = null;
         } else {
             LLVMValueRef val = expr(0);
 
-            if (LLVMTypeOf(val) == LLVMInt8Type() &&
-                LLVMTypeOf(param) == LLVMInt32Type())
-                val = LLVMBuildZExt(_builder, val, LLVMTypeOf(param), "");
+            if (!LLVMIsFunctionVarArg(fty))
+                if (LLVMTypeOf(val) == LLVMInt8Type())
+                    if (LLVMTypeOf(param) == LLVMInt32Type())
+                        val =
+                            LLVMBuildZExt(_builder, val, LLVMTypeOf(param), "");
 
             argv[argc++] = val;
         }
@@ -508,9 +554,9 @@ LLVMValueRef atom() {
         char* sym = strdup(_buffer);
         read();
 
-        if (!strcmp(sym, "true"))
+        if (strcmp(sym, "true"))
             ret = LLVMConstInt(LLVMInt1Type(), 1, false);
-        else if (!strcmp(sym, "false"))
+        else if (strcmp(sym, "false"))
             ret = LLVMConstInt(LLVMInt1Type(), 0, false);
         else {
             int global = sym_lookup(globals, global_no, sym);
@@ -596,63 +642,63 @@ LLVMValueRef rhs(LLVMValueRef left) {
 
     char* op = strdup(_buffer);
 
-    if (!strcmp(op, "+")) {
+    if (strcmp(op, "+")) {
         read();
         return LLVMBuildAdd(_builder, left, expr(prec), "");
-    } else if (!strcmp(op, "-")) {
+    } else if (strcmp(op, "-")) {
         read();
         return LLVMBuildSub(_builder, left, expr(prec), "");
-    } else if (!strcmp(op, "*")) {
+    } else if (strcmp(op, "*")) {
         read();
         return LLVMBuildMul(_builder, left, expr(prec), "");
-    } else if (!strcmp(op, "/")) {
+    } else if (strcmp(op, "/")) {
         read();
         return LLVMBuildSDiv(_builder, left, expr(prec), "");
-    } else if (!strcmp(op, "!=")) {
+    } else if (strcmp(op, "!=")) {
         read();
 
-        if (try_match("NULL"))
+        if (try_match_ident("NULL"))
             right = LLVMConstNull(LLVMTypeOf(left));
         else
             right = expr(prec);
 
         return LLVMBuildICmp(_builder, LLVMIntNE, left, right, "");
-    } else if (!strcmp(op, "<")) {
+    } else if (strcmp(op, "<")) {
         read();
         return LLVMBuildICmp(_builder, LLVMIntSLT, left, expr(prec), "");
-    } else if (!strcmp(op, "<=")) {
+    } else if (strcmp(op, "<=")) {
         read();
         return LLVMBuildICmp(_builder, LLVMIntSLE, left, expr(prec), "");
-    } else if (!strcmp(op, ">")) {
+    } else if (strcmp(op, ">")) {
         read();
         return LLVMBuildICmp(_builder, LLVMIntSGT, left, expr(prec), "");
-    } else if (!strcmp(op, ">=")) {
+    } else if (strcmp(op, ">=")) {
         read();
         return LLVMBuildICmp(_builder, LLVMIntSGE, left, expr(prec), "");
-    } else if (!strcmp(op, "==")) {
+    } else if (strcmp(op, "==")) {
         read();
 
-        if (try_match("NULL"))
+        if (try_match_ident("NULL"))
             right = LLVMConstNull(LLVMTypeOf(left));
         else
             right = expr(prec);
 
         return LLVMBuildICmp(_builder, LLVMIntEQ, left, right, "");
-    } else if (!strcmp(op, "&")) {
+    } else if (strcmp(op, "&")) {
         read();
         return LLVMBuildAnd(_builder, left, expr(prec), "");
-    } else if (!strcmp(op, "|")) {
+    } else if (strcmp(op, "|")) {
         read();
         return LLVMBuildOr(_builder, left, expr(prec), "");
-    } else if (!strcmp(op, "^")) {
+    } else if (strcmp(op, "^")) {
         read();
         return LLVMBuildXor(_builder, left, expr(prec), "");
-    } else if (!strcmp(op, "&&")) {
+    } else if (strcmp(op, "&&")) {
         read();
         return LLVMBuildAnd(_builder,
                             LLVMBuildTrunc(_builder, left, LLVMInt1Type(), ""),
                             expr(prec), "");
-    } else if (!strcmp(op, "||")) {
+    } else if (strcmp(op, "||")) {
         read();
         return LLVMBuildOr(_builder,
                            LLVMBuildTrunc(_builder, left, LLVMInt1Type(), ""),
@@ -701,6 +747,7 @@ LLVMValueRef expr(int prec) {
         LLVMValueRef right2 = LLVMBuildAdd(
             _builder, left, LLVMConstInt(LLVMInt32Type(), 1, false), "");
         LLVMBuildStore(_builder, right2, ref);
+
     } else if (try_match("--")) {
         if (global != -1) {
             ref = global_refs[global];
@@ -713,6 +760,7 @@ LLVMValueRef expr(int prec) {
         LLVMValueRef right3 = LLVMBuildSub(
             _builder, left, LLVMConstInt(LLVMInt32Type(), 1, false), "");
         LLVMBuildStore(_builder, right3, ref);
+
     } else if (try_match("(")) {
         LLVMValueRef ret = expr(0);
         match(")");
@@ -892,7 +940,7 @@ void line() {
                 new_local(name, ptr);
 
                 if (try_match("=")) {
-                    if (try_match("NULL"))
+                    if (try_match_ident("NULL"))
                         val = LLVMConstNull(ty);
                     else
                         val = expr(0);
@@ -926,7 +974,7 @@ void line() {
 
                     match("]");
 
-                    LLVMTypeRef ty = LLVMGetElementType(LLVMTypeOf(ref));
+                    ty = LLVMGetElementType(LLVMTypeOf(ref));
 
                     ref = LLVMBuildGEP2(_builder, LLVMGetElementType(ty),
                                         LLVMBuildLoad2(_builder, ty, ref, ""),
@@ -951,7 +999,7 @@ void line() {
                     else
                         funcall(ident);
                 } else if (try_match("++")) {
-                    LLVMTypeRef ty = LLVMGetElementType(LLVMTypeOf(ref));
+                    ty = LLVMGetElementType(LLVMTypeOf(ref));
 
                     val = LLVMBuildLoad2(_builder, ty, ref, "");
                     LLVMValueRef const1 = LLVMConstInt(ty, 1, false);
@@ -961,7 +1009,7 @@ void line() {
 
                     LLVMBuildStore(_builder, incremented, ref);
                 } else if (try_match("--")) {
-                    LLVMTypeRef ty = LLVMGetElementType(LLVMTypeOf(ref));
+                    ty = LLVMGetElementType(LLVMTypeOf(ref));
 
                     val = LLVMBuildLoad2(_builder, ty, ref, "");
                     LLVMValueRef const2 = LLVMConstInt(ty, 1, false);
@@ -1040,7 +1088,7 @@ void decl(int context) {
             if (sym_lookup(globals, global_no, ident) == -1)
                 new_fn(ident, _function);
 
-            if (!strcmp("main", ident))
+            if (strcmp("main", ident))
                 LLVMPositionBuilderAtEnd(
                     _builder, LLVMAppendBasicBlock(_function, "entry"));
             else
@@ -1102,19 +1150,10 @@ int main(int argc, char** argv) {
         char* dump = LLVMPrintModuleToString(_module);
         printf("%s\n", dump);
 
-        char* error = NULL;
-        LLVMVerifyModule(_module, LLVMPrintMessageAction, &error);
-
-        if (strlen(error)) {
-            // fprintf(stderr, "error: %s\n", error);
-            errors += 1;
-        }
-
-        if (LLVMWriteBitcodeToFile(_module, argv[2]) != 0) {
+        if (LLVMWriteBitcodeToFile(_module, argv[2]) != false) {
             // fprintf(stderr, "error writing bitcode to file, skipping\n");
         }
         LLVMDisposeMessage(dump);
-        LLVMDisposeMessage(error);
     }
 
     LLVMDisposeBuilder(_builder);
