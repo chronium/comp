@@ -243,10 +243,14 @@ void lex_eat_escape() {
             _buffer[_buflength++] = '\0';
         else if (_curch == '\\' && !feof(_input))
             _buffer[_buflength++] = '\\';
-        else if (_curch == '\r' && !feof(_input))
+        else if (_curch == 'r' && !feof(_input))
             _buffer[_buflength++] = '\r';
-        else if (_curch == '\t' && !feof(_input))
+        else if (_curch == 't' && !feof(_input))
             _buffer[_buflength++] = '\t';
+        else if (_curch == '\'' && !feof(_input))
+            _buffer[_buflength++] = '\'';
+        else if (_curch == '"' && !feof(_input))
+            _buffer[_buflength++] = '"';
         lex_next_char();
     } else
         lex_eat_char();

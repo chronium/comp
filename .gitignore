@@ -2,7 +2,9 @@
 *.ll
 *.bc
 **/*.log
+*.out
 
 comp
+bcomp
 
 .vscode/settings.json
