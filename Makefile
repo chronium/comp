@@ -15,6 +15,13 @@ run: all
 	valgrind ./$(OUT:.bc=) comp.c stage3.bc
 	lli-12 stage3.bc comp.c out.bc
 
+self: ARGS=$(filter-out $@,$(MAKECMDGOALS))
+self: OUT=$(lastword $(ARGS:.aat=.bc))
+self: all
+	valgrind ./comp comp.c tmpcomp.bc
+	$(CXX) $(CFLAGS) $(CXXFLAGS) tmpcomp.bc -o tmpcomp
+	valgrind ./tmpcomp $(ARGS) $(OUT)
+
 tests: comp
 	$(MAKE) --directory=$@
 

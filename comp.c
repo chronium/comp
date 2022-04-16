@@ -81,6 +81,9 @@ LLVMValueRef LLVMBuildZExt(LLVMBuilderRef, LLVMValueRef Val, LLVMTypeRef DestTy,
                            const char* Name);
 LLVMValueRef LLVMBuildBitCast(LLVMBuilderRef, LLVMValueRef Val,
                               LLVMTypeRef DestTy, const char* Name);
+LLVMValueRef LLVMBuildStructGEP2(LLVMBuilderRef B, LLVMTypeRef Ty,
+                                 LLVMValueRef Pointer, int Idx,
+                                 const char* Name);
 
 // Diagnostics
 char* LLVMPrintModuleToString(LLVMModuleRef module);
@@ -101,8 +104,10 @@ LLVMTypeRef LLVMGetElementType(LLVMTypeRef ty);
 LLVMTypeRef LLVMStructType(LLVMTypeRef* ty, int elemCount, int Packed);
 LLVMTypeRef LLVMStructCreateNamed(LLVMContextRef ctx, const char* name);
 int LLVMGetTypeKind(LLVMTypeRef ty);
-LLVMValueRef LLVMGetParam(LLVMValueRef Fn, int Index);
 bool LLVMIsFunctionVarArg(LLVMTypeRef FunctionTy);
+void LLVMStructSetBody(LLVMTypeRef StructTy, LLVMTypeRef* ElementTypes,
+                       int ElementCount, bool Packed);
+bool LLVMTypeIsSized(LLVMTypeRef Ty);
 
 // Values
 LLVMValueRef LLVMGetPoison(LLVMTypeRef ty);
@@ -110,6 +115,8 @@ LLVMValueRef LLVMConstInt(LLVMTypeRef ty, int N, bool signExtend);
 LLVMValueRef LLVMConstIntOfString(LLVMTypeRef ty, const char* Text, int Radix);
 LLVMValueRef LLVMConstString(const char* value, int len, int DontNullTerminate);
 LLVMValueRef LLVMConstNull(LLVMTypeRef Ty);
+LLVMValueRef LLVMSizeOf(LLVMTypeRef Ty);
+LLVMValueRef LLVMGetParam(LLVMValueRef Fn, int Index);
 
 // Variables
 LLVMValueRef LLVMAddGlobal(LLVMModuleRef module, LLVMTypeRef ty,
@@ -128,6 +135,7 @@ void free(void* __ptr);
 char fgetc(FILE* __stream);
 int ungetc(char __c, FILE* __stream);
 bool feof(FILE* __stream);
+void exit(int __status);
 
 bool strcmp(const char* __s1, const char* __s2) {
     if (__s1 == NULL || __s2 == NULL) return false;
@@ -195,6 +203,11 @@ void lex_new(char* filename) {
     _input = fopen(filename, "r");
     _buffer = malloc(256);
     _curln = 1;
+
+    if (_input == NULL) {
+        printf("Could not open file %s\n", filename);
+        exit(1);
+    }
 }
 
 void lex_drop() {
@@ -327,15 +340,17 @@ void lex_next() {
     } else if (_curch == '.') {
         lex_next_char();
         if (_curch != '.') {
-            error("Expected .");
-        }
-        lex_next_char();
-        if (_curch != '.') {
-            error("Expected .");
-        }
-        lex_next_char();
+            _buffer[_buflength++] = '.';
+            _token = TOKEN_SYMBOL;
+        } else {
+            lex_next_char();
+            if (_curch != '.') {
+                error("Expected .");
+            }
+            lex_next_char();
 
-        _token = TOKEN_VARARGS;
+            _token = TOKEN_VARARGS;
+        }
 
     } else if (_curch == '+' || _curch == '-' || _curch == '*' ||
                _curch == '/' || _curch == '&' || _curch == '|' ||
@@ -394,28 +409,41 @@ char** locals;
 int local_no = 0;
 int arg_no = 0;
 LLVMValueRef* local_refs;
+char** locals_typename;
 
 char** globals;
 int global_no = 0;
 LLVMValueRef* global_refs;
 bool* is_fn;
+char** globals_typename;
 
 char** typedefs;
 int typedef_no = 0;
 LLVMTypeRef* typedef_refs;
+bool* is_struct;
+bool* is_struct_td;
+char*** struct_fields;
+LLVMTypeRef** struct_field_refs;
 
 void sym_init(int max) {
     int size = max * 8;
 
     locals = malloc(size);
     local_refs = malloc(size);
+    locals_typename = malloc(size);
 
     globals = malloc(size);
     global_refs = malloc(size);
     is_fn = calloc(max, 8);
+    globals_typename = malloc(size);
 
     typedefs = malloc(size);
     typedef_refs = malloc(size);
+    is_struct_td = calloc(max, 8);
+    is_struct = calloc(max, 8);
+
+    struct_fields = malloc(size);
+    struct_field_refs = malloc(size);
 }
 
 void new_typedef(char* ident, LLVMTypeRef type) {
@@ -423,23 +451,37 @@ void new_typedef(char* ident, LLVMTypeRef type) {
     typedefs[typedef_no++] = ident;
 }
 
-void new_global(char* ident, LLVMValueRef ref) {
+void new_struct_td(char* sident, char* tident, char** fields,
+                   LLVMTypeRef* fields_refs, LLVMTypeRef type) {
+    is_struct[typedef_no] = false;
+    struct_fields[typedef_no] = fields;
+    struct_field_refs[typedef_no] = fields_refs;
+    new_typedef(sident, type);
+    is_struct_td[typedef_no] = true;
+    struct_fields[typedef_no] = fields;
+    struct_field_refs[typedef_no] = fields_refs;
+    new_typedef(tident, type);
+}
+
+void new_global(char* ident, char* typename, LLVMValueRef ref) {
     global_refs[global_no] = ref;
+    globals_typename[global_no] = typename;
     globals[global_no++] = ident;
 }
 
 void new_fn(char* ident, LLVMValueRef fn) {
     is_fn[global_no] = true;
-    new_global(ident, fn);
+    new_global(ident, "", fn);
 }
 
-void new_local(char* ident, LLVMValueRef ref) {
+void new_local(char* ident, char* typename, LLVMValueRef ref) {
     local_refs[local_no] = ref;
+    locals_typename[local_no] = typename;
     locals[local_no++] = ident;
 }
 
-void new_arg(char* ident) {
-    new_local(ident, NULL);
+void new_arg(char* ident, char* typename) {
+    new_local(ident, typename, NULL);
     arg_no++;
 }
 
@@ -495,7 +537,25 @@ bool is_closed() {
     return try_match(")");
 }
 
+LLVMTypeRef type(bool suppress);
+
+LLVMValueRef do_sizeof() {
+    LLVMTypeRef ty = type(true);
+
+    if (ty == LLVMVoidType()) {
+        ty = LLVMTypeOf(expr(0));
+    }
+
+    match(")");
+
+    return LLVMBuildTrunc(_builder, LLVMSizeOf(ty), LLVMInt32Type(), "");
+}
+
 LLVMValueRef funcall(char* name) {
+    if (strcmp(name, "sizeof")) {
+        return do_sizeof();
+    }
+
     LLVMValueRef argv[8];
     int argc = 0;
 
@@ -541,6 +601,27 @@ LLVMValueRef deref_value(LLVMValueRef value) {
     return LLVMBuildLoad2(_builder, inner, value, "");
 }
 
+LLVMValueRef get_struct_member(int index, bool is_local, char* struct_field,
+                               LLVMValueRef ptr) {
+    int lookup;
+    if (is_local)
+        lookup = sym_lookup(typedefs, typedef_no, locals_typename[index]);
+    else
+        lookup = sym_lookup(typedefs, typedef_no, globals_typename[index]);
+
+    LLVMTypeRef struct_type = typedef_refs[lookup];
+    char** fields = struct_fields[lookup];
+
+    int field = sym_lookup(fields, 8, struct_field);
+
+    if (field == -1) {
+        errorb("Could not find field %s\n", struct_field);
+        return NULL;
+    }
+
+    return LLVMBuildStructGEP2(_builder, struct_type, ptr, field, "");
+}
+
 LLVMValueRef atom() {
     LLVMValueRef ref = NULL;
     LLVMValueRef llval = NULL;
@@ -571,6 +652,11 @@ LLVMValueRef atom() {
             } else if (lookup != -1) {
                 ref = local_refs[lookup];
 
+                if (try_match(".")) {
+                    ref = get_struct_member(lookup, true, _buffer, ref);
+                    read();
+                }
+
                 ret = LLVMBuildLoad2(
                     _builder, LLVMGetElementType(LLVMTypeOf(ref)), ref, "");
             } else if (global != -1) {
@@ -578,9 +664,15 @@ LLVMValueRef atom() {
 
                 if (try_match("(")) {
                     ret = funcall(sym);
-                } else
+                } else {
+                    if (try_match(".")) {
+                        ref = get_struct_member(global, false, _buffer, ref);
+                        read();
+                    }
+
                     ret = LLVMBuildLoad2(
                         _builder, LLVMGetElementType(LLVMTypeOf(ref)), ref, "");
+                }
             } else
                 error("Symbol %s not declared\n");
         }
@@ -859,18 +951,20 @@ LLVMTypeRef type(bool suppress) {
         is_void = true;
     } else if (try_match("char"))
         ret = LLVMInt8Type();
-    else if (try_match("struct")) {
-        ret = LLVMStructCreateNamed(LLVMGetGlobalContext(), strdup(_buffer));
-        read();
-    } else if (try_match("bool")) {
+    else if (try_match("bool"))
         ret = LLVMInt1Type();
-    }
 
     if (ret == NULL) {
-        int lookup = sym_lookup(typedefs, typedef_no, _buffer);
+        int lookup;
+        if (try_match("struct")) {
+            error("Unsupported");
+            exit(1);
+        } else
+            lookup = sym_lookup(typedefs, typedef_no, _buffer);
 
-        if (lookup != -1) {
+        if (lookup != -1 || ret != NULL) {
             ret = typedef_refs[lookup];
+
             read();
         }
 
@@ -938,10 +1032,10 @@ void line() {
 
                 LLVMBuildStore(_builder, ptr, slot);
 
-                new_local(name, slot);
+                new_local(name, ident, slot);
             } else {
                 ptr = LLVMBuildAlloca(_builder, ty, name);
-                new_local(name, ptr);
+                new_local(name, ident, ptr);
 
                 if (try_match("=")) {
                     if (try_match_ident("NULL"))
@@ -1022,6 +1116,28 @@ void line() {
                         LLVMBuildSub(_builder, val, const2, "");
 
                     LLVMBuildStore(_builder, decremented, ref);
+                } else if (try_match(".")) {
+                    if (local != -1)
+                        ref = get_struct_member(local, true, _buffer, ref);
+                    else if (global != -1)
+                        ref = get_struct_member(global, false, _buffer, ref);
+                    else
+                        errorb("Could not find struct %s\n", ident);
+
+                    read();
+
+                    if (try_match("=")) {
+                        val = expr(0);
+                        LLVMTypeRef destTy = LLVMTypeOf(ref);
+
+                        if (LLVMTypeOf(val) ==
+                                LLVMPointerType(LLVMInt8Type(), 0) &&
+                            LLVMGetTypeKind(destTy) == LLVMPointerTypeKind)
+                            val = LLVMBuildPointerCast(
+                                _builder, val, LLVMGetElementType(destTy), "");
+
+                        LLVMBuildStore(_builder, val, ref);
+                    }
                 } else
                     error("statement expected\n");
             }
@@ -1039,18 +1155,53 @@ void block() {
         line();
 }
 
+void new_struct(char* name) {
+    LLVMTypeRef ty = LLVMStructCreateNamed(LLVMGetGlobalContext(), name);
+    LLVMStructSetBody(ty, NULL, 0, false);
+
+    LLVMTypeRef* fields = malloc(8 * 8);
+    char** field_names = malloc(8 * 8);
+    int field_no = 0;
+
+    while (try_match("{")) {
+        if (try_match("}")) break;
+        LLVMTypeRef ty = type(false);
+
+        char* name = strdup(_buffer);
+        field_names[field_no] = name;
+        read();
+
+        match(";");
+
+        fields[field_no++] = ty;
+    }
+
+    match("}");
+
+    if (_token != TOKEN_IDENT) error("struct name expected\n");
+    char* typename = strdup(_buffer);
+    read();
+
+    LLVMStructSetBody(ty, fields, field_no, false);
+
+    new_struct_td(name, typename, field_names, fields, ty);
+}
+
 int module_context = 0;
 int function_context = 1;
 
 void decl(int context) {
     bool is_typedef = false;
     bool is_impl = false;
+    bool is_struct = false;
+    LLVMTypeRef retty;
 
     if (try_match("typedef")) is_typedef = true;
+    if (try_match("struct")) is_struct = true;
 
     char* typename = strdup(_buffer);
 
-    LLVMTypeRef retty = type(false);
+    if (!is_struct) retty = type(false);
 
     char* ident = strdup(_buffer);
     read();
@@ -1072,9 +1223,10 @@ void decl(int context) {
                 break;
             }
 
+            char* ty = strdup(_buffer);
             argv[argc++] = type(false);
 
-            new_arg(strdup(_buffer));
+            new_arg(strdup(_buffer), ty);
 
             read();
             try_match(",");
@@ -1110,7 +1262,10 @@ void decl(int context) {
             new_fn(ident, LLVMAddFunction(_module, ident, fnty));
     } else if (context == module_context) {
         if (is_typedef) {
-            new_typedef(ident, retty);
+            if (is_struct)
+                new_struct(ident);
+            else
+                new_typedef(ident, retty);
         } else {
             LLVMValueRef global = LLVMAddGlobal(_module, retty, ident);
 
@@ -1120,7 +1275,7 @@ void decl(int context) {
             } else
                 LLVMSetInitializer(global, LLVMConstNull(retty));
 
-            new_global(ident, global);
+            new_global(ident, typename, global);
         }
     }
 

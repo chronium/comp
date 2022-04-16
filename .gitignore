@@ -4,6 +4,8 @@
 **/*.log
 *.out
 
+*.bak
+
 comp
 bcomp
 

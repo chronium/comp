@@ -1,0 +1,11 @@
+int sizeof();
+int printf(const char* fmt, ...);
+
+int main() {
+    int sint = sizeof(int);
+    printf("sizeof(int): %d\n", sint);
+    int schar = sizeof(char);
+    printf("sizeof(char): %d\n", schar);
+
+    return 0;
+}
